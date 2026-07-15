@@ -577,7 +577,7 @@ jobs:
           # Sumber icon
           if [ -f ../assets/icon/icon.jpg ] && file ../assets/icon/icon.jpg | grep -q PNG; then
             echo "✅ Using icon from assets/icon/icon.jpg"
-            ICON_SRC="../build-assets/icon.png"
+            ICON_SRC="../assets/icon/icon.jpg"
           else
             echo "⚠️ No valid icon found, creating default blue icon..."
             convert -size 512x512 xc:blue ../assets/icon/icon.jpg
