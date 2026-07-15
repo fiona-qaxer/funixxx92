@@ -439,16 +439,16 @@ jobs:
         run: |
           sed -i "s|URL_PLACEHOLDER|${{ env.url }}|g" project/app/src/main/java/com/web2apk/app/MainActivity.java
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ env.app_name }}</string>|g" project/app/src/main/res/values/strings.xml
-          if [ ! -f assets/icon/icon.jpg ] || ! file assets/icon/icon.jpg | grep -q PNG; then
+          if [ ! -f build-assets/icon.png ] || ! file build-assets/icon.png | grep -q PNG; then
             echo "⚠️ Icon tidak valid, membuat default..."
-            convert -size 512x512 xc:blue assets/icon/icon.jpg
+            convert -size 512x512 xc:blue build-assets/icon.png
           fi
           mkdir -p project/app/src/main/res/mipmap-hdpi project/app/src/main/res/mipmap-mdpi project/app/src/main/res/mipmap-xhdpi project/app/src/main/res/mipmap-xxhdpi project/app/src/main/res/mipmap-xxxhdpi
-          convert assets/icon/icon.jpg -resize 72x72 project/app/src/main/res/mipmap-hdpi/ic_launcher.png
-          convert assets/icon/icon.jpg -resize 48x48 project/app/src/main/res/mipmap-mdpi/ic_launcher.png
-          convert assets/icon/icon.jpg -resize 96x96 project/app/src/main/res/mipmap-xhdpi/ic_launcher.png
-          convert assets/icon/icon.jpg -resize 144x144 project/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
-          convert assets/icon/icon.jpg -resize 192x192 project/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          convert build-assets/icon.png -resize 72x72 project/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          convert build-assets/icon.png -resize 48x48 project/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          convert build-assets/icon.png -resize 96x96 project/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          convert build-assets/icon.png -resize 144x144 project/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          convert build-assets/icon.png -resize 192x192 project/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
           cp project/app/src/main/res/mipmap-hdpi/ic_launcher.png project/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
           cp project/app/src/main/res/mipmap-mdpi/ic_launcher.png project/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
           cp project/app/src/main/res/mipmap-xhdpi/ic_launcher.png project/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
@@ -567,7 +567,7 @@ jobs:
           fi
 
           # Jika tidak semua ada atau konversi gagal, regenerasi dari build-assets
-          echo "Regenerating icons from assets/icon/icon.jpg..."
+          echo "Regenerating icons from build-assets/icon.png..."
 
           # Hapus semua file ikon
           for dir in $MIPMAP_DIRS; do
@@ -575,15 +575,25 @@ jobs:
           done
 
           # Sumber icon
-          if [ -f ../assets/icon/icon.jpg ] && file ../assets/icon/icon.jpg | grep -q PNG; then
-            echo "✅ Using icon from assets/icon/icon.jpg"
-            ICON_SRC="../assets/icon/icon.jpg"
-          else
-            echo "⚠️ No valid icon found, creating default blue icon..."
-            convert -size 512x512 xc:blue ../assets/icon/icon.jpg
-            ICON_SRC="../assets/icon/icon.jpg"
-          fi
+          # Sumber icon
+if [ -f "assets/icon/icon.png" ]; then
+  echo "✅ Using assets/icon/icon.png"
+  ICON_SRC="assets/icon/icon.png"
 
+elif [ -f "assets/icon/icon.jpg" ]; then
+  echo "✅ Using assets/icon/icon.jpg"
+  ICON_SRC="assets/icon/icon.jpg"
+
+elif [ -f "../build-assets/icon.png" ]; then
+  echo "✅ Using build-assets/icon.png"
+  ICON_SRC="../build-assets/icon.png"
+
+else
+  echo "⚠️ No valid icon found, creating default blue icon..."
+  mkdir -p ../build-assets
+  convert -size 512x512 xc:blue ../build-assets/icon.png
+  ICON_SRC="../build-assets/icon.png"
+fi
           for dir in $MIPMAP_DIRS; do
             mkdir -p android/app/src/main/res/$dir
           done
