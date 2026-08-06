@@ -1,29 +1,20 @@
-Name: Build APK
+name: Dynamic Android & Web2APK Builder
 
 on:
   push:
-    branches:
-      - build
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    branches: [ main, build ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    permissions:
+      contents: read
+      actions: write
 
-      - name: Free Up Disk Space
-        run: |
-          echo "Freeing up disk space..."
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          sudo rm -rf /usr/local/lib/android/sdk/emulator
-          df -h
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -32,585 +23,104 @@ jobs:
           distribution: 'temurin'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
 
-      - name: Install dependencies (ImageMagick, jq, unzip, curl)
-        run: sudo apt-get update && sudo apt-get install -y imagemagick jq unzip curl
-
-      - name: Install Gradle
-        run: |
-          curl -s "https://get.sdkman.io" | bash
-          source "$HOME/.sdkman/bin/sdkman-init.sh"
-          sdk install gradle 8.9
-          sdk use gradle 8.9
-          gradle --version
-
-      - name: Read build config
+      - name: Read Build Configuration
         id: config
         run: |
-          if [ -f build-config.json ]; then
-            echo "type=$(jq -r .type build-config.json)" >> $GITHUB_ENV
-            echo "url=$(jq -r .url build-config.json)" >> $GITHUB_ENV
-            echo "app_name=$(jq -r .app_name build-config.json)" >> $GITHUB_ENV
-            echo "build_type=$(jq -r .build_type build-config.json)" >> $GITHUB_ENV
-            cat build-config.json
+          if [ -f "build-config.json" ]; then
+            TYPE=$(jq -r '.type // "android"' build-config.json)
+            BUILD_TYPE=$(jq -r '.build_type // .buildType // "release"' build-config.json)
+            APP_NAME=$(jq -r '.app_name // .appName // "App"' build-config.json)
+            URL=$(jq -r '.url // ""' build-config.json)
           else
-            echo "type=unknown" >> $GITHUB_ENV
+            TYPE="android"
+            BUILD_TYPE="release"
+            APP_NAME="App"
+            URL=""
           fi
 
-      - name: Generate keystore for signing (all builds)
-        run: |
-          keytool -genkey -v -keystore release.keystore -alias release -keyalg RSA -keysize 2048 -validity 10000 -storepass password -keypass password -dname "CN=BuildBot, OU=Dev, O=BuildBot, L=City, S=State, C=ID"
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
+          echo "build_type=$BUILD_TYPE" >> $GITHUB_OUTPUT
+          echo "app_name=$APP_NAME" >> $GITHUB_OUTPUT
+          echo "url=$URL" >> $GITHUB_OUTPUT
 
-      # ---------- Web2APK ----------
-      - name: Web2APK - Create root gradle files
-        if: env.type == 'web2apk'
+      # --- LENGKAP UNTUK ANDROID GRADLE ---
+      - name: Process Android Gradle Project
+        if: ${{ steps.config.outputs.type == 'android' }}
         run: |
-          mkdir -p project
-          cat > project/build.gradle <<EOF
-          buildscript {
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-              dependencies {
-                  classpath 'com.android.tools.build:gradle:8.7.3'
-              }
-          }
-          allprojects {
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-          task clean(type: Delete) {
-              delete rootProject.buildDir
-          }
-          EOF
-          cat > project/settings.gradle <<EOF
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
-          dependencyResolutionManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-          rootProject.name = "MyApp"
-          include ':app'
-          EOF
-          cat > project/gradle.properties <<EOF
-          org.gradle.jvmargs=-Xmx2048m
-          android.useAndroidX=true
-          android.enableJetifier=true
-          EOF
-
-      - name: Web2APK - Create app/build.gradle
-        if: env.type == 'web2apk'
-        run: |
-          mkdir -p project/app
-          cat > project/app/build.gradle <<EOF
-          plugins {
-              id 'com.android.application'
-          }
-          android {
-              namespace 'com.web2apk.app'
-              compileSdk 34
-              defaultConfig {
-                  applicationId "com.web2apk.app"
-                  minSdk 21
-                  targetSdk 34
-                  versionCode 1
-                  versionName "1.0"
-              }
-              signingConfigs {
-                  debug {
-                      storeFile file("debug.keystore")
-                      storePassword "android"
-                      keyAlias "androiddebugkey"
-                      keyPassword "android"
-                  }
-                  release {
-                      storeFile file("debug.keystore")
-                      storePassword "android"
-                      keyAlias "androiddebugkey"
-                      keyPassword "android"
-                  }
-              }
-              buildTypes {
-                  debug { signingConfig signingConfigs.debug }
-                  release {
-                      signingConfig signingConfigs.release
-                      minifyEnabled false
-                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-                  }
-              }
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-              }
-          }
-          dependencies {
-              implementation 'androidx.core:core-ktx:1.9.0'
-              implementation 'androidx.appcompat:appcompat:1.6.1'
-              implementation 'com.google.android.material:material:1.8.0'
-              implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
-              implementation 'androidx.webkit:webkit:1.4.0'
-          }
-          EOF
-
-      - name: Web2APK - Create Java source files
-        if: env.type == 'web2apk'
-        run: |
-          mkdir -p project/app/src/main/java/com/web2apk/app
-          cat > project/app/src/main/java/com/web2apk/app/MainActivity.java <<EOF
-          package com.web2apk.app;
-          import android.annotation.SuppressLint;
-          import android.app.DownloadManager;
-          import android.content.Intent;
-          import android.net.Uri;
-          import android.os.Bundle;
-          import android.os.Environment;
-          import android.view.View;
-          import android.webkit.CookieManager;
-          import android.webkit.DownloadListener;
-          import android.webkit.WebChromeClient;
-          import android.webkit.WebResourceRequest;
-          import android.webkit.WebSettings;
-          import android.webkit.WebView;
-          import android.webkit.WebViewClient;
-          import android.widget.ProgressBar;
-          import androidx.appcompat.app.AppCompatActivity;
-          import androidx.appcompat.widget.Toolbar;
-          import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
-          public class MainActivity extends AppCompatActivity {
-              private static final String WEBSITE_URL = "URL_PLACEHOLDER";
-              private WebView webView;
-              private ProgressBar progressBar;
-              private SwipeRefreshLayout swipeRefreshLayout;
-              @SuppressLint("SetJavaScriptEnabled")
-              @Override
-              protected void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
-                  setContentView(R.layout.activity_main);
-                  webView = findViewById(R.id.webView);
-                  progressBar = findViewById(R.id.progressBar);
-                  swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout);
-                  Toolbar toolbar = findViewById(R.id.toolbar);
-                  setSupportActionBar(toolbar);
-                  if (getSupportActionBar() != null) {
-                      getSupportActionBar().setTitle(getString(R.string.app_name));
-                  }
-                  setupWebView();
-                  swipeRefreshLayout.setOnRefreshListener(() -> webView.reload());
-                  webView.loadUrl(WEBSITE_URL);
-              }
-              @SuppressLint("SetJavaScriptEnabled")
-              private void setupWebView() {
-                  WebSettings settings = webView.getSettings();
-                  settings.setJavaScriptEnabled(true);
-                  settings.setDomStorageEnabled(true);
-                  settings.setDatabaseEnabled(true);
-                  settings.setMediaPlaybackRequiresUserGesture(false);
-                  settings.setAllowFileAccess(true);
-                  settings.setAllowContentAccess(true);
-                  settings.setUseWideViewPort(true);
-                  settings.setLoadWithOverviewMode(true);
-                  settings.setBuiltInZoomControls(false);
-                  settings.setDisplayZoomControls(false);
-                  settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-                  CookieManager cookieManager = CookieManager.getInstance();
-                  cookieManager.setAcceptCookie(true);
-                  cookieManager.setAcceptThirdPartyCookies(webView, true);
-                  webView.setWebViewClient(new WebViewClient() {
-                      @Override
-                      public void onPageFinished(WebView view, String url) {
-                          progressBar.setVisibility(View.GONE);
-                          swipeRefreshLayout.setRefreshing(false);
-                      }
-                      @Override
-                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                          String url = request.getUrl().toString();
-                          if (url.startsWith("tel:") || url.startsWith("mailto:") || url.startsWith("intent:") || url.startsWith("whatsapp:")) {
-                              try {
-                                  startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-                              } catch (Exception ignored) {}
-                              return true;
-                          }
-                          return false;
-                      }
-                  });
-                  webView.setWebChromeClient(new WebChromeClient() {
-                      @Override
-                      public void onProgressChanged(WebView view, int progress) {
-                          progressBar.setProgress(progress);
-                          if (progress >= 100) {
-                              progressBar.setVisibility(View.GONE);
-                          } else {
-                              progressBar.setVisibility(View.VISIBLE);
-                          }
-                      }
-                  });
-                  webView.setDownloadListener(new DownloadListener() {
-                      @Override
-                      public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
-                          DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                          request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                          request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, contentDisposition);
-                          DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                          dm.enqueue(request);
-                      }
-                  });
-                  webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-              }
-              @Override
-              public void onBackPressed() {
-                  if (webView != null && webView.canGoBack()) {
-                      webView.goBack();
-                      return;
-                  }
-                  super.onBackPressed();
-              }
-              @Override
-              protected void onResume() {
-                  if (webView != null) webView.onResume();
-              }
-              @Override
-              protected void onPause() {
-                  if (webView != null) webView.onPause();
-                  super.onPause();
-              }
-              @Override
-              protected void onDestroy() {
-                  if (webView != null) webView.destroy();
-                  super.onDestroy();
-              }
-          }
-          EOF
-          cat > project/app/src/main/java/com/web2apk/app/SplashActivity.java <<EOF
-          package com.web2apk.app;
-          import android.content.Intent;
-          import android.os.Bundle;
-          import android.os.Handler;
-          import androidx.appcompat.app.AppCompatActivity;
-          public class SplashActivity extends AppCompatActivity {
-              private static final int SPLASH_DELAY = 1800;
-              @Override
-              protected void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
-                  setContentView(R.layout.activity_splash);
-                  new Handler().postDelayed(() -> {
-                      Intent intent = new Intent(SplashActivity.this, MainActivity.class);
-                      startActivity(intent);
-                      finish();
-                  }, SPLASH_DELAY);
-              }
-          }
-          EOF
-
-      - name: Web2APK - Create AndroidManifest.xml and layouts
-        if: env.type == 'web2apk'
-        run: |
-          mkdir -p project/app/src/main/res/layout
-          mkdir -p project/app/src/main/res/values
-          cat > project/app/src/main/AndroidManifest.xml <<EOF
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-              <application
-                  android:allowBackup="true"
-                  android:hardwareAccelerated="true"
-                  android:usesCleartextTraffic="true"
-                  android:icon="@mipmap/ic_launcher"
-                  android:roundIcon="@mipmap/ic_launcher_round"
-                  android:label="@string/app_name"
-                  android:theme="@style/AppTheme">
-                  <activity
-                      android:name=".SplashActivity"
-                      android:exported="true"
-                      android:theme="@style/SplashTheme">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="false"
-                      android:launchMode="singleTop"
-                      android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
-              </application>
-          </manifest>
-          EOF
-          cat > project/app/src/main/res/layout/activity_main.xml <<EOF
-          <?xml version="1.0" encoding="utf-8"?>
-          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-              xmlns:app="http://schemas.android.com/apk/res-auto"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent"
-              android:orientation="vertical">
-              <androidx.appcompat.widget.Toolbar
-                  android:id="@+id/toolbar"
-                  android:layout_width="match_parent"
-                  android:layout_height="56dp"
-                  android:background="#000000"
-                  app:titleTextColor="#FFFFFF"/>
-              <ProgressBar
-                  android:id="@+id/progressBar"
-                  style="?android:attr/progressBarStyleHorizontal"
-                  android:layout_width="match_parent"
-                  android:layout_height="4dp"
-                  android:max="100"/>
-              <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-                  android:id="@+id/swipeRefreshLayout"
-                  android:layout_width="match_parent"
-                  android:layout_height="match_parent">
-                  <WebView
-                      android:id="@+id/webView"
-                      android:layout_width="match_parent"
-                      android:layout_height="match_parent"/>
-              </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
-          </LinearLayout>
-          EOF
-          cat > project/app/src/main/res/layout/activity_splash.xml <<EOF
-          <?xml version="1.0" encoding="utf-8"?>
-          <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent"
-              android:background="#000000">
-              <LinearLayout
-                  android:layout_width="wrap_content"
-                  android:layout_height="wrap_content"
-                  android:layout_centerInParent="true"
-                  android:gravity="center"
-                  android:orientation="vertical">
-                  <ImageView
-                      android:id="@+id/splashLogo"
-                      android:layout_width="120dp"
-                      android:layout_height="120dp"
-                      android:src="@mipmap/ic_launcher" />
-                  <TextView
-                      android:id="@+id/splashAppName"
-                      android:layout_width="wrap_content"
-                      android:layout_height="wrap_content"
-                      android:text="@string/app_name"
-                      android:textSize="26sp"
-                      android:textStyle="bold"
-                      android:textColor="#FFFFFF"
-                      android:layout_marginTop="20dp" />
-                  <ProgressBar
-                      android:id="@+id/splashProgress"
-                      android:layout_width="40dp"
-                      android:layout_height="40dp"
-                      android:layout_marginTop="30dp" />
-              </LinearLayout>
-          </RelativeLayout>
-          EOF
-          cat > project/app/src/main/res/values/colors.xml <<EOF
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <color name="colorPrimary">#000000</color>
-              <color name="colorPrimaryDark">#000000</color>
-              <color name="colorAccent">#2196F3</color>
-              <color name="white">#FFFFFF</color>
-              <color name="black">#000000</color>
-          </resources>
-          EOF
-          cat > project/app/src/main/res/values/strings.xml <<EOF
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <string name="app_name">AppName</string>
-              <string name="loading">Loading...</string>
-          </resources>
-          EOF
-          cat > project/app/src/main/res/values/styles.xml <<EOF
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar">
-                  <item name="android:statusBarColor">#000000</item>
-                  <item name="android:navigationBarColor">#000000</item>
-                  <item name="android:windowLightStatusBar">false</item>
-              </style>
-              <style name="SplashTheme" parent="Theme.Material3.DayNight.NoActionBar">
-                  <item name="android:windowBackground">@android:color/black</item>
-                  <item name="android:statusBarColor">@android:color/transparent</item>
-              </style>
-          </resources>
-          EOF
-
-      - name: Web2APK - Apply URL, app name, icons, and keystore
-        if: env.type == 'web2apk'
-        run: |
-          sed -i "s|URL_PLACEHOLDER|${{ env.url }}|g" project/app/src/main/java/com/web2apk/app/MainActivity.java
-          sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ env.app_name }}</string>|g" project/app/src/main/res/values/strings.xml
-          if [ ! -f build-assets/icon.png ] || ! identify build-assets/icon.png >/dev/null 2>&1; then
-            echo "⚠️ Icon tidak valid atau tidak ditemukan, membuat default..."
-            mkdir -p build-assets
-            convert -size 512x512 xc:blue build-assets/icon.png
-          fi
-          if ! identify build-assets/icon.png >/dev/null 2>&1; then
-            echo "❌ Source icon masih tidak valid setelah default creation!"
-            convert -size 512x512 xc:blue build-assets/icon.png
-          fi
-          mkdir -p project/app/src/main/res/mipmap-hdpi project/app/src/main/res/mipmap-mdpi project/app/src/main/res/mipmap-xhdpi project/app/src/main/res/mipmap-xxhdpi project/app/src/main/res/mipmap-xxxhdpi
-          convert build-assets/icon.png -resize 72x72 project/app/src/main/res/mipmap-hdpi/ic_launcher.png
-          convert build-assets/icon.png -resize 48x48 project/app/src/main/res/mipmap-mdpi/ic_launcher.png
-          convert build-assets/icon.png -resize 96x96 project/app/src/main/res/mipmap-xhdpi/ic_launcher.png
-          convert build-assets/icon.png -resize 144x144 project/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
-          convert build-assets/icon.png -resize 192x192 project/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-          cp project/app/src/main/res/mipmap-hdpi/ic_launcher.png project/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
-          cp project/app/src/main/res/mipmap-mdpi/ic_launcher.png project/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
-          cp project/app/src/main/res/mipmap-xhdpi/ic_launcher.png project/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
-          cp project/app/src/main/res/mipmap-xxhdpi/ic_launcher.png project/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
-          cp project/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png project/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
-          for dir in mipmap-hdpi mipmap-mdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
-            if ! identify "project/app/src/main/res/$dir/ic_launcher.png" >/dev/null 2>&1; then
-              echo "⚠️ Icon di $dir tidak valid, regenerate dengan default..."
-              convert -size 192x192 xc:blue "project/app/src/main/res/$dir/ic_launcher.png"
-              cp "project/app/src/main/res/$dir/ic_launcher.png" "project/app/src/main/res/$dir/ic_launcher_round.png"
+          # Ekstrak project ZIP jika dikirim dalam bentuk arsip
+          if [ -f "android-project.zip" ]; then
+            echo "Unzipping android-project.zip..."
+            unzip -q android-project.zip -d extracted_project || true
+            
+            # Pindahkan isi jika terbungkus folder tunggal
+            ROOT_DIR="extracted_project"
+            if [ $(ls -A $ROOT_DIR | wc -l) -eq 1 ] && [ -d "$ROOT_DIR/*" ]; then
+              ROOT_DIR=$(ls -d $ROOT_DIR/*)
             fi
-            if ! identify "project/app/src/main/res/$dir/ic_launcher_round.png" >/dev/null 2>&1; then
-              echo "⚠️ Round icon di $dir tidak valid, regenerate..."
-              cp "project/app/src/main/res/$dir/ic_launcher.png" "project/app/src/main/res/$dir/ic_launcher_round.png"
-            fi
-          done
-          echo "✅ Semua icon Web2APK berhasil divalidasi."
-          rm -f project/app/debug.keystore
-          keytool -genkey -v -keystore project/app/debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug, O=Android, C=US"
+            cp -rn $ROOT_DIR/* . || true
+            rm -rf extracted_project android-project.zip
+          fi
 
-      - name: Web2APK - Build
-        if: env.type == 'web2apk'
-        run: |
-          cd project
-          source "$HOME/.sdkman/bin/sdkman-init.sh"
-          gradle assembleRelease
+          # Cari direktori lokasi gradlew atau build.gradle
+          PROJECT_DIR=$(find . -maxdepth 3 -name "build.gradle*" -exec dirname {} \; | head -n 1)
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR="."
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
 
-      - name: Web2APK - Sign APK
-        if: env.type == 'web2apk'
+          # Siapkan Gradle Wrapper jika belum ada
+          cd $PROJECT_DIR
+          if [ ! -f "gradlew" ]; then
+            echo "gradlew tidak ditemukan, meng-generate wrapper..."
+            gradle wrapper
+          fi
+          chmod +x gradlew
+
+      - name: Build Android App
+        if: ${{ steps.config.outputs.type == 'android' }}
         run: |
-          APK_PATH=$(find project/app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          if [ -f "$APK_PATH" ]; then
-            echo "Menandatangani Web2APK APK: $APK_PATH"
-            $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -n1)/apksigner sign --ks release.keystore --ks-pass pass:password --key-pass pass:password "$APK_PATH"
-            echo "Verifikasi tanda tangan Web2APK:"
-            $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -n1)/apksigner verify "$APK_PATH"
+          cd ${{ env.PROJECT_DIR }}
+          BUILD_TYPE="${{ steps.config.outputs.build_type }}"
+          
+          if [ "$BUILD_TYPE" = "debug" ]; then
+            ./gradlew assembleDebug --no-daemon --stacktrace
           else
-            echo "APK Web2APK tidak ditemukan, skip signing"
+            ./gradlew assembleRelease --no-daemon --stacktrace
           fi
 
-      # ---------- NATIVE ANDROID GRADLE ----------
-      - name: Prepare Native Android project
-        if: env.type == 'android' || env.type == 'native'
+      # --- LENGKAP UNTUK WEB2APK (NATIVE/BUILT-IN TEMPLATE) ---
+      - name: Process Web2APK (If requested)
+        if: ${{ steps.config.outputs.type == 'web2apk' }}
         run: |
-          rm -rf android-project
-          mkdir -p android-project
-          unzip -q android-project.zip -d android-project
+          echo "Memproses Web2APK untuk URL: ${{ steps.config.outputs.url }}"
+          # Jalankan skrip pembuat Web2APK Anda di sini jika ada
+          # Jika Web2APK menggunakan project gradle bawaan, Build via gradlew
 
-          # Ratakan struktur folder jika zip membungkus folder utama
-          FIRST_DIR=$(find android-project -mindepth 1 -maxdepth 1 -type d | head -n 1)
-          ROOT_FILES=$(find android-project -mindepth 1 -maxdepth 1 | wc -l)
-
-          if [ "$ROOT_FILES" = "1" ] && [ -n "$FIRST_DIR" ] && { [ -f "$FIRST_DIR/build.gradle" ] || [ -f "$FIRST_DIR/build.gradle.kts" ]; }; then
-            TMP_DIR=$(mktemp -d)
-            cp -R "$FIRST_DIR"/. "$TMP_DIR"/
-            rm -rf android-project
-            mkdir -p android-project
-            cp -R "$TMP_DIR"/. android-project/
-          fi
-
-          if [ ! -f android-project/build.gradle ] && [ ! -f android-project/build.gradle.kts ]; then
-            echo "❌ build.gradle atau build.gradle.kts tidak ditemukan di root project!"
+      # --- PENGUMPULAN HASIL APK ---
+      - name: Collect & Package Output APK
+        run: |
+          mkdir -p output
+          
+          # Cari semua file APK hasil build di seluruh subfolder
+          FOUND_APKS=$(find . -type f -name "*.apk" ! -path "*/output/*")
+          
+          if [ -z "$FOUND_APKS" ]; then
+            echo "❌ Tidak ada file APK yang ditemukan!"
             exit 1
           fi
 
-      - name: Setup Gradle environment for Native Android
-        if: env.type == 'android' || env.type == 'native'
-        run: |
-          cd android-project
-          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-            GRADLE_VERSION=$(grep distributionUrl gradle/wrapper/gradle-wrapper.properties | sed -n 's/.*gradle-\([0-9.]*\)-.*/\1/p')
-            echo "Detected Gradle version: $GRADLE_VERSION"
-            if [ -n "$GRADLE_VERSION" ]; then
-              source "$HOME/.sdkman/bin/sdkman-init.sh"
-              yes | sdk install gradle $GRADLE_VERSION || true
-              sdk use gradle $GRADLE_VERSION || true
-            fi
-          fi
+          COUNT=1
+          for apk in $FOUND_APKS; do
+            echo "Ditemukan APK: $apk"
+            cp "$apk" "output/app-build-$COUNT.apk"
+            COUNT=$((COUNT+1))
+          done
 
-          # Buat gradlew executable jika ada
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-          fi
-
-      - name: Configure Keystore & Build Properties
-        if: env.type == 'android' || env.type == 'native'
-        run: |
-          # Temukan folder modul app
-          APP_DIR="android-project/app"
-          if [ ! -d "$APP_DIR" ]; then
-            APP_DIR="android-project"
-          fi
-
-          cp release.keystore "$APP_DIR/"
-
-          # Inject konfigurasi signing jika diperlukan
-          BUILD_FILE="$APP_DIR/build.gradle"
-          BUILD_KTS_FILE="$APP_DIR/build.gradle.kts"
-
-          if [ -f "$BUILD_FILE" ]; then
-            sed -i 's|storeFile file(".*")|storeFile file("release.keystore")|g' "$BUILD_FILE"
-            sed -i 's|storePassword ".*"|storePassword "password"|g' "$BUILD_FILE"
-            sed -i 's|keyAlias ".*"|keyAlias "release"|g' "$BUILD_FILE"
-            sed -i 's|keyPassword ".*"|keyPassword "password"|g' "$BUILD_FILE"
-          elif [ -f "$BUILD_KTS_FILE" ]; then
-            sed -i 's|storeFile = file(".*")|storeFile = file("release.keystore")|g' "$BUILD_KTS_FILE"
-            sed -i 's|storePassword = ".*"|storePassword "password"|g' "$BUILD_KTS_FILE"
-            sed -i 's|keyAlias = ".*"|keyAlias "release"|g' "$BUILD_KTS_FILE"
-            sed -i 's|keyPassword = ".*"|keyPassword "password"|g' "$BUILD_KTS_FILE"
-          fi
-
-      - name: Build Native Android APK
-        if: env.type == 'android' || env.type == 'native'
-        run: |
-          cd android-project
-          source "$HOME/.sdkman/bin/sdkman-init.sh"
-
-          BUILD_TASK="assembleRelease"
-          if [ "${{ env.build_type }}" = "debug" ]; then
-            BUILD_TASK="assembleDebug"
-          fi
-
-          if [ -f ./gradlew ]; then
-            ./gradlew $BUILD_TASK --no-daemon
-          else
-            gradle $BUILD_TASK --no-daemon
-          fi
-
-      - name: Sign Native Android APK (Release)
-        if: (env.type == 'android' || env.type == 'native') && env.build_type == 'release'
-        run: |
-          APK_PATH=$(find android-project -path "*/build/outputs/apk/release/*.apk" | head -n 1)
-          if [ -f "$APK_PATH" ]; then
-            echo "Menandatangani Android APK: $APK_PATH"
-            $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -n1)/apksigner sign --ks release.keystore --ks-pass pass:password --key-pass pass:password "$APK_PATH"
-            echo "Verifikasi tanda tangan APK Native Android:"
-            $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -n1)/apksigner verify "$APK_PATH"
-          else
-            echo "⚠️ APK release tidak ditemukan untuk ditandatangani"
-          fi
-
-      # ---------- UPLOAD ----------
-      - name: Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app
-          path: |
-            project/app/build/outputs/apk/release/*.apk
-            android-project/**/build/outputs/apk/**/*.apk
-          if-no-files-found: error
+          name: Generated-APK
+          path: output/*.apk
+          retention-days: 7
