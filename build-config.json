@@ -1,5 +1,4 @@
 {
   "type": "android",
-  "build_type": "debug",
-  "buildType": "debug"
+  "build_type": "release"
 }
